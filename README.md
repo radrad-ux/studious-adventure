@@ -28,7 +28,7 @@
 1. روح لـ [sheets.google.com](https://sheets.google.com) وأنشئ Spreadsheet جديد، سميه مثلاً **"طلبات AntiVolDZ"**.
 2. فالصف الأول (Row 1) دير هذي العناوين بالضبط، بنفس الترتيب:
    ```
-   Timestamp | Name | Phone | Wilaya | Address | Product | Qty | UnitPrice | Total | Status | Flags | IP | UserAgent
+   Timestamp | Name | Phone | Wilaya | Baladiya | Address | Product | Offer | Qty | Total | Status | Flags | IP | UserAgent
    ```
 3. سمي الـ Sheet (التبويب فالأسفل) `Orders` (هو الاسم المستعمل فالكود، أو بدّله فـ `.env`).
 4. خذ الـ **Sheet ID** من الرابط:
@@ -103,9 +103,10 @@ npm start
 
 ## 5) تخصيص الموقع
 
-- **السعر**: بدّل `UNIT_PRICE` فآخر `public/index.html` (السطر فيه `var UNIT_PRICE = 2900;`) وبدّل أيضاً السعر المعروض فالـ `.price-tag`.
-- **اسم المنتج / المواصفات**: بدّل النصوص مباشرة فـ `public/index.html`.
-- **رقم الهاتف للتواصل المباشر**: زيد رابط واتساب أو رقم فالـ footer إذا حبيت.
+- **الأسعار والعروض**: السعر ما عادش يتحدد من المتصفح (كان فيه ثغرة قبل: أي حد يقدر يبدل السعر من المتصفح قبل الإرسال). دروك الأسعار محددة فـ `server.js` فـ `PRICE_TIERS`، والمتصفح غير يختار رقم العرض (1/2/3). إذا بغيت تبدل الأسعار، بدّلها فـ **مكانين**: فـ `server.js` (`PRICE_TIERS`) وفـ `public/index.html` (المتغير `TIERS` فالـ JavaScript، يستعمل غير للعرض، ماشي للحساب الحقيقي).
+- **اسم المنتج / المواصفات / الصور**: بدّل النصوص والصور مباشرة فـ `public/index.html` و `public/images/`.
+- **رقم واتساب**: بدّل `WHATSAPP_NUMBER` فـ `public/index.html` (بصيغة دولية بلا +، مثال: `213500000000`).
+- **رقم الهاتف للتواصل**: بدّل `tel:0500000000` فـ 3 أماكن فـ `index.html` (الهيدر، الفوتر، رسالة النجاح).
 - **عدد الطلبات المسموحة كل 15 دقيقة لكل IP**: بدّل `max: 5` فـ `server.js` (دالة `orderLimiter`).
 - **مدة كشف التكرار**: بدّل `DEDUPE_WINDOW_HOURS` فـ `.env`.
 

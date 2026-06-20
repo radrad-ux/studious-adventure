@@ -23,6 +23,17 @@ const DEDUPE_WINDOW_HOURS = parseInt(process.env.DEDUPE_WINDOW_HOURS || '24', 10
 const ALGERIA_PHONE_REGEX = /^0[5-7][0-9]{8}$/;
 
 // ---------------------------------------------------------------------------
+// PRICE TABLE - the single source of truth for prices.
+// The browser only ever sends a "tier" (1, 2 or 3) - never a price.
+// This stops anyone from tampering with the request to set their own price.
+// ---------------------------------------------------------------------------
+const PRICE_TIERS = {
+  1: { qty: 1, price: 2900, shipping: 400, label: 'قطعة واحدة' },
+  2: { qty: 2, price: 5500, shipping: 0, label: 'قطعتان (توصيل مجاني)' },
+  3: { qty: 3, price: 7900, shipping: 0, label: '3 قطع (توصيل مجاني)' },
+};
+
+// ---------------------------------------------------------------------------
 // Middleware
 // ---------------------------------------------------------------------------
 app.use(helmet({ contentSecurityPolicy: false }));
@@ -31,7 +42,6 @@ app.use(express.json({ limit: '50kb' }));
 app.use(express.static(path.join(__dirname, 'public')));
 app.set('trust proxy', 1); // needed on Render so req.ip is the real client IP
 
-// Anyone hammering /api/order or /api/challenge gets throttled per IP.
 const challengeLimiter = rateLimit({
   windowMs: 10 * 60 * 1000,
   max: 30,
@@ -70,7 +80,6 @@ function readToken(token) {
     return null;
   }
   const expectedSig = sign(payload);
-  // timing-safe compare
   const a = Buffer.from(sig || '');
   const b = Buffer.from(expectedSig);
   if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return null;
@@ -154,24 +163,25 @@ function getSheetsClient() {
   return sheetsClientPromise;
 }
 
+// Sheet columns:
+// A Timestamp | B Name | C Phone | D Wilaya | E Baladiya | F Address
+// G Product | H Offer | I Qty | J Total | K Status | L Flags | M IP | N UserAgent
 async function findRecentDuplicate(sheets, phone, productName) {
-  const range = `${SHEET_TAB}!A:K`;
+  const range = `${SHEET_TAB}!A:N`;
   const result = await sheets.spreadsheets.values.get({ spreadsheetId: SHEET_ID, range });
   const rows = result.data.values || [];
   const cutoff = Date.now() - DEDUPE_WINDOW_HOURS * 60 * 60 * 1000;
-  // Columns: A Timestamp(ISO) | B Name | C Phone | D Wilaya | E Address
-  //          F Product | G Qty | H UnitPrice | I Total | J Status | K Flags
   for (let i = rows.length - 1; i >= 1; i--) {
     const row = rows[i];
     const ts = Date.parse(row[0]);
     if (!Number.isFinite(ts) || ts < cutoff) continue;
-    if (row[2] === phone && row[5] === productName) return true;
+    if (row[2] === phone && row[6] === productName) return true;
   }
   return false;
 }
 
 async function appendOrder(sheets, order) {
-  const range = `${SHEET_TAB}!A:K`;
+  const range = `${SHEET_TAB}!A:N`;
   await sheets.spreadsheets.values.append({
     spreadsheetId: SHEET_ID,
     range,
@@ -184,10 +194,11 @@ async function appendOrder(sheets, order) {
           order.name,
           order.phone,
           order.wilaya,
+          order.baladiya,
           order.address,
           order.product,
+          order.offerLabel,
           order.qty,
-          order.unitPrice,
           order.total,
           order.status,
           order.flags,
@@ -208,7 +219,6 @@ app.post('/api/order', orderLimiter, async (req, res) => {
 
     // 1) Honeypot - real users never fill this hidden field
     if (body.website) {
-      // Pretend success so the bot doesn't learn anything; we just drop it.
       return res.json({ ok: true });
     }
 
@@ -224,14 +234,19 @@ app.post('/api/order', orderLimiter, async (req, res) => {
       return res.status(400).json({ ok: false, error: captchaCheck.reason });
     }
 
-    // 4) Required fields
+    // 4) Price tier - looked up server-side, the client cannot set its own price
+    const tier = PRICE_TIERS[parseInt(body.tier, 10)];
+    if (!tier) {
+      return res.status(400).json({ ok: false, error: 'invalid_tier' });
+    }
+
+    // 5) Required fields
     const name = (body.name || '').trim();
     const wilaya = (body.wilaya || '').trim();
+    const baladiya = (body.baladiya || '').trim();
     const address = (body.address || '').trim();
-    const product = (body.product || '').trim();
-    const qty = Math.max(1, Math.min(10, parseInt(body.qty, 10) || 1));
-    const unitPrice = parseInt(body.unitPrice, 10);
     const phone = normalizePhone(body.phone);
+    const product = 'مفتاح صامولة أمان Audi';
 
     if (!name || name.length < 3) {
       return res.status(400).json({ ok: false, error: 'invalid_name' });
@@ -242,14 +257,14 @@ app.post('/api/order', orderLimiter, async (req, res) => {
     if (!wilaya) {
       return res.status(400).json({ ok: false, error: 'invalid_wilaya' });
     }
+    if (!baladiya || baladiya.length < 2) {
+      return res.status(400).json({ ok: false, error: 'invalid_baladiya' });
+    }
     if (!address || address.length < 5) {
       return res.status(400).json({ ok: false, error: 'invalid_address' });
     }
-    if (!Number.isFinite(unitPrice) || unitPrice <= 0) {
-      return res.status(400).json({ ok: false, error: 'invalid_price' });
-    }
 
-    const total = unitPrice * qty;
+    const total = tier.price + tier.shipping;
     const sheets = await getSheetsClient();
     const isDuplicate = await findRecentDuplicate(sheets, phone, product);
 
@@ -257,10 +272,11 @@ app.post('/api/order', orderLimiter, async (req, res) => {
       name,
       phone,
       wilaya,
+      baladiya,
       address,
       product,
-      qty,
-      unitPrice,
+      offerLabel: tier.label,
+      qty: tier.qty,
       total,
       status: 'بانتظار التأكيد',
       flags: isDuplicate ? 'تكرار محتمل - تحقق قبل التأكيد' : '',
@@ -268,7 +284,7 @@ app.post('/api/order', orderLimiter, async (req, res) => {
       userAgent: req.get('user-agent') || '',
     });
 
-    return res.json({ ok: true });
+    return res.json({ ok: true, total });
   } catch (err) {
     console.error('Order error:', err.message);
     return res.status(500).json({ ok: false, error: 'server_error' });
